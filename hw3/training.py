@@ -9,6 +9,10 @@ from typing import Callable, Any
 from pathlib import Path
 from cs236605.train_results import BatchResult, EpochResult, FitResult
 
+# TODO: delete
+from hw3.charnn import print_shape
+# END
+
 
 class Trainer(abc.ABC):
     """
@@ -207,14 +211,14 @@ class RNNTrainer(Trainer):
     def train_epoch(self, dl_train: DataLoader, **kw):
         # TODO: Implement modifications to the base method, if needed.
         # ====== YOUR CODE: ======
-        raise NotImplementedError()
+        # raise NotImplementedError()
         # ========================
         return super().train_epoch(dl_train, **kw)
 
     def test_epoch(self, dl_test: DataLoader, **kw):
         # TODO: Implement modifications to the base method, if needed.
         # ====== YOUR CODE: ======
-        raise NotImplementedError()
+        # raise NotImplementedError()
         # ========================
         return super().test_epoch(dl_test, **kw)
 
@@ -231,7 +235,49 @@ class RNNTrainer(Trainer):
         # - Update params
         # - Calculate number of correct char predictions
         # ====== YOUR CODE: ======
-        raise NotImplementedError()
+
+        # get y as one_hot
+        y_one_hot = torch.zeros(x.shape).to(self.device)
+        for i, seq in enumerate(y):
+            for j, char in enumerate(seq):
+                y_one_hot[i][j][char] = 1.
+
+        # foeward pass, loss, backward pass, step
+        h = None
+        num_correct = torch.tensor(0)
+
+        ### OPTION 1 : k1, k2
+        for i, (batch, y_batch) in enumerate(zip(x.split(1, 1), y_one_hot.split(1, 1))):
+            y_pred, h = self.model(batch, h)
+            print_shape(y_pred, 'y_pred')
+            print_shape(y_batch, 'y')
+            print(y_pred.dtype)
+            print(y_batch.squeeze(1).dtype)
+            loss = self.loss_fn(y_pred, y_batch.squeeze(1))
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+            # count num_correct
+            y_pred_idx = y_pred.argmax(dim=2)
+            num_correct += torch.tensor(y[y == y_pred_idx].size())
+
+        ### OPTION 2 : batch is good enough for BPTT
+        # y_pred, h = self.model(batch, h)
+        # print_shape(y_pred, 'y_pred')
+        # y_batch = y_one_hot[:, i, :].unsqueeze(1)
+        # print_shape(y_batch, 'y')
+        # loss = self.loss_fn(y_pred, y)
+        # self.optimizer.zero_grad()
+        # loss.backward()
+        # self.optimizer.step()
+        #
+        # # count num_correct
+        # y_pred_idx = y_pred.argmax(dim=2)
+        # num_correct += torch.tensor(y[y == y_pred_idx].size())
+
+
+        # raise NotImplementedError()
         # ========================
 
         # Note: scaling num_correct by seq_len because each sample has seq_len

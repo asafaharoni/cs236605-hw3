@@ -5,6 +5,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+# TODO: remove
+import os
+DEBUG = 1
+VERBOSE = 0
+
+
+def print_shape(x, tag=''):
+    print(f'{tag}={x.shape}')
+
+# END
+
 
 def char_maps(text: str):
     """
@@ -22,7 +33,12 @@ def char_maps(text: str):
     # It's best if you also sort the chars before assigning indices, so that
     # they're in lexical order.
     # ====== YOUR CODE: ======
-    raise NotImplementedError()
+    chars = set(text)
+    char_to_idx = {}
+    idx_to_char = {}
+    for i, char in enumerate(chars):
+        char_to_idx[char] = i
+        idx_to_char[i] = char
     # ========================
     return char_to_idx, idx_to_char
 
@@ -38,7 +54,9 @@ def remove_chars(text: str, chars_to_remove):
     """
     # TODO: Implement according to the docstring.
     # ====== YOUR CODE: ======
-    raise NotImplementedError()
+    chars_re = '[' + ''.join(chars_to_remove) + ']'
+    text_clean = re.sub(chars_re, '', text)
+    n_removed = len(re.findall(chars_re, text))
     # ========================
     return text_clean, n_removed
 
@@ -58,7 +76,13 @@ def chars_to_onehot(text: str, char_to_idx: dict) -> Tensor:
     """
     # TODO: Implement the embedding.
     # ====== YOUR CODE: ======
-    raise NotImplementedError()
+    zeros_list = [0] * (len(char_to_idx) - 1)
+    chars_mat = []
+    for char in text:
+        onehot = zeros_list.copy()
+        onehot.insert(char_to_idx[char], 1)
+        chars_mat.append(onehot)
+    result = torch.tensor(chars_mat, dtype=torch.int8)
     # ========================
     return result
 
@@ -75,7 +99,8 @@ def onehot_to_chars(embedded_text: Tensor, idx_to_char: dict) -> str:
     """
     # TODO: Implement the reverse-embedding.
     # ====== YOUR CODE: ======
-    raise NotImplementedError()
+    idx = embedded_text.argmax(dim=-1)
+    result = ''.join([idx_to_char[i.item()] for i in idx])
     # ========================
     return result
 
@@ -104,7 +129,29 @@ def chars_to_labelled_samples(text: str, char_to_idx: dict, seq_len: int,
     # 3. Create the labels tensor in a similar way and convert to indices.
     # Note that no explicit loops are required to implement this function.
     # ====== YOUR CODE: ======
-    raise NotImplementedError()
+
+    # embedded = chars_to_onehot(text, char_to_idx).to(device)
+
+    #TODO: remove, for debug purposes
+    embedded = None
+    embedded_file = 'embedded.pt'
+    if os.path.isfile(embedded_file) and DEBUG == 1:
+        embedded = torch.load(embedded_file, map_location='cpu').to(device)
+        print(embedded[0][0])
+    else:
+        embedded = chars_to_onehot(text, char_to_idx)
+        print(embedded[0][0])
+        torch.save(embedded, embedded_file)
+        embedded.to(device)
+    #END
+
+    #TODO: broadcast last sequence
+    samples_embedded = torch.unsqueeze(embedded[:-1], dim=0)
+    samples = torch.cat(samples_embedded.split(seq_len, dim=1)[:][:-1], dim=0)
+
+    labels_embedded = torch.unsqueeze(embedded[1:], dim=0)
+    labels_sequences = torch.cat(labels_embedded.split(seq_len, dim=1)[:][:-1], dim=0)
+    labels = torch.argmax(labels_sequences, dim=2)
     # ========================
     return samples, labels
 
@@ -120,7 +167,7 @@ def hot_softmax(y, dim=0, temperature=1.0):
     """
     # TODO: Implement based on the above.
     # ====== YOUR CODE: ======
-    raise NotImplementedError()
+    result = F.softmax(y / temperature, dim=dim)
     # ========================
     return result
 
@@ -156,7 +203,14 @@ def generate_from_model(model, start_sequence, n_chars, char_maps, T):
     # necessary for this. Best to disable tracking for speed.
     # See torch.no_grad().
     # ====== YOUR CODE: ======
-    raise NotImplementedError()
+    X = chars_to_onehot(start_sequence, char_to_idx).to(device).unsqueeze(0).to(dtype=torch.float)
+    y, h = model(X)
+    y = y[:, -1:]
+    while len(out_text) < n_chars:
+        prob = hot_softmax(y, 2, T)[0][-1]
+        index = torch.multinomial(prob, 1)
+        out_text += idx_to_char[index.item()]
+        y, h = model(y, h)
     # ========================
 
     return out_text
@@ -200,7 +254,39 @@ class MultilayerGRU(nn.Module):
         #     then call self.register_parameter() on them. Also make
         #     sure to initialize them. See functions in torch.nn.init.
         # ====== YOUR CODE: ======
-        raise NotImplementedError()
+
+        self.layers = \
+            [{
+                # z Layers
+                'Wxz': nn.Linear(in_dim, 1, bias=False),
+                'Whz': nn.Linear(h_dim, 1, bias=True),
+                # r Layers
+                'Wxr': nn.Linear(in_dim, 1, bias=True),
+                'Whr': nn.Linear(h_dim, 1, bias=False),
+                # g Layers
+                'Wxg': nn.Linear(in_dim, h_dim, bias=False),
+                'Whg': nn.Linear(h_dim, h_dim, bias=True)
+            }] +\
+            [{
+                # z Layers
+                'Wxz': nn.Linear(h_dim, 1, bias=False),
+                'Whz': nn.Linear(h_dim, 1, bias=True),
+                # r Layers
+                'Wxr': nn.Linear(h_dim, 1, bias=True),
+                'Whr': nn.Linear(h_dim, 1, bias=False),
+                # g Layers
+                'Wxg': nn.Linear(h_dim, h_dim, bias=False),
+                'Whg': nn.Linear(h_dim, h_dim, bias=True)
+            }] * (n_layers - 1)
+        for i, layer in enumerate(self.layers):
+            for linear in layer:
+                self.add_module(linear + str(i), layer[linear])
+        # output layer
+        self.Why = nn.Sequential(
+            nn.Linear(h_dim, out_dim, bias=True),
+            nn.Sigmoid()
+        )
+        self.dropout = dropout
         # ========================
 
     def forward(self, input: Tensor, hidden_state: Tensor=None):
@@ -234,7 +320,42 @@ class MultilayerGRU(nn.Module):
         # You'll need to go layer-by-layer from bottom to top (see diagram).
         # Tip: You can use torch.stack() to combine multiple tensors into a
         # single tensor in a differentiable manner.
+        #         'Wxz': nn.Linear(h_dim, 1, bias=False),
+        #         'Whz': nn.Linear(h_dim, 1, bias=True),
+        #         # r Layers
+        #         'Wxr': nn.Linear(h_dim, 1, bias=True),
+        #         'Whr': nn.Linear(h_dim, 1, bias=False),
+        #         # g Layers
+        #         'Wxg': nn.Linear(h_dim, h_dim, bias=False),
+        #         'Whg': nn.Linear(h_dim, h_dim, bias=True)
         # ====== YOUR CODE: ======
-        raise NotImplementedError()
+
+        for i, layer in enumerate(self.layers):
+            h = layer_states[i]
+            for t, cell_input in enumerate(layer_input.split(1, 1)):
+                cell_input = cell_input.squeeze(1)
+                z = F.sigmoid(layer['Wxz'](cell_input) + layer['Whz'](h))
+                r = F.sigmoid(layer['Wxr'](cell_input) + layer['Whr'](h))
+                g = F.tanh(layer['Wxg'](cell_input) + layer['Whg'](r * h))
+                h = z * h + (1 - z) * g
+                h_up = F.dropout(h, self.dropout).unsqueeze(1)
+                if t == 0:
+                    next_layer_input = h_up
+                else:
+                    next_layer_input = torch.cat((next_layer_input, h_up), dim=1)
+            layer_states[i] = h.unsqueeze(1)
+            layer_input = next_layer_input
+            if VERBOSE:
+                print(f'layer {i} output shape is {layer_input.shape}')
+        hidden_state = torch.cat(layer_states, dim=1)
+
+        #output layer
+        for t, h in enumerate(layer_input.split(1, 1)):
+            out = self.Why(h)
+            if t == 0:
+                next_layer_input = out
+            else:
+                next_layer_input = torch.cat((next_layer_input, out), dim=1)
+        layer_output = next_layer_input
         # ========================
         return layer_output, hidden_state
