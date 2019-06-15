@@ -89,7 +89,39 @@ class Trainer(abc.ABC):
             # - Implement early stopping. This is a very useful and
             #   simple regularization technique that is highly recommended.
             # ====== YOUR CODE: ======
-            raise NotImplementedError()
+
+            # Train epoch and record
+            train_result = self.train_epoch(dl_train, verbose=verbose, **kw)
+            epoch_train_loss, epoch_train_acc = train_result
+            train_loss.append(sum(epoch_train_loss) / len(epoch_train_loss))
+            train_acc.append(epoch_train_acc)
+
+            # Test epoch and record
+            test_result = self.test_epoch(dl_test, verbose=verbose, **kw)
+            epoch_test_loss, epoch_test_acc = test_result
+            test_loss.append(sum(epoch_test_loss) / len(epoch_test_loss))
+            test_acc.append(epoch_test_acc)
+
+            # Increase epochs count
+            actual_num_epochs += 1
+
+            # Early stopping
+            if early_stopping is not None:
+                if best_acc is not None and epoch_test_acc < best_acc:
+                    if epoch > 15:
+                        epochs_without_improvement += 1
+                        if verbose:
+                            print(f'Patience dropped')
+                else:
+                    best_acc = epoch_train_acc
+                    save_checkpoint = True
+                    if verbose:
+                        print(f'Patience restored')
+                    epochs_without_improvement = 0
+
+                if epochs_without_improvement == early_stopping:
+                    print(f'Stopped early, at epoch {epoch}')
+                    break
             # ========================
 
             # Save model checkpoint if requested
@@ -211,14 +243,14 @@ class RNNTrainer(Trainer):
     def train_epoch(self, dl_train: DataLoader, **kw):
         # TODO: Implement modifications to the base method, if needed.
         # ====== YOUR CODE: ======
-        # raise NotImplementedError()
+        self.h = None
         # ========================
         return super().train_epoch(dl_train, **kw)
 
     def test_epoch(self, dl_test: DataLoader, **kw):
         # TODO: Implement modifications to the base method, if needed.
         # ====== YOUR CODE: ======
-        # raise NotImplementedError()
+        self.h = None
         # ========================
         return super().test_epoch(dl_test, **kw)
 
@@ -236,48 +268,46 @@ class RNNTrainer(Trainer):
         # - Calculate number of correct char predictions
         # ====== YOUR CODE: ======
 
-        # get y as one_hot
-        y_one_hot = torch.zeros(x.shape).to(self.device)
-        for i, seq in enumerate(y):
-            for j, char in enumerate(seq):
-                y_one_hot[i][j][char] = 1.
-
         # foeward pass, loss, backward pass, step
-        h = None
-        num_correct = torch.tensor(0)
+        num_correct = 0
 
         ### OPTION 1 : k1, k2
-        for i, (batch, y_batch) in enumerate(zip(x.split(1, 1), y_one_hot.split(1, 1))):
-            y_pred, h = self.model(batch, h)
-            print_shape(y_pred, 'y_pred')
-            print_shape(y_batch, 'y')
-            print(y_pred.dtype)
-            print(y_batch.squeeze(1).dtype)
-            loss = self.loss_fn(y_pred, y_batch.squeeze(1))
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-
-            # count num_correct
-            y_pred_idx = y_pred.argmax(dim=2)
-            num_correct += torch.tensor(y[y == y_pred_idx].size())
+        # k1 = 80
+        #
+        # for t, (char_batch, y_batch) in enumerate(zip(x.split(1, 1), y.split(1, 1))):
+        #     if t % k1 == 0 and t != 0:
+        #         y_pred, h = self.model(char_batch, h.detach())
+        #     else:
+        #         y_pred, h = self.model(char_batch)
+        #     self.optimizer.zero_grad()
+        #     loss = self.loss_fn(y_pred.squeeze(1), y_batch.squeeze(1))
+        #     loss.backward()
+        #     self.optimizer.step()
+        #     # print(f'19={y_pred[0][0][19]}')
+        #     # print(f'20={y_pred[0][0][20]}')
+        #
+        #     # count num_correct
+        #     y_pred_idx = y_pred.argmax(dim=2)
+        #     num_correct += len(y_batch[y_batch == y_pred_idx])
+        # num_correct = torch.tensor(num_correct)
 
         ### OPTION 2 : batch is good enough for BPTT
-        # y_pred, h = self.model(batch, h)
-        # print_shape(y_pred, 'y_pred')
-        # y_batch = y_one_hot[:, i, :].unsqueeze(1)
-        # print_shape(y_batch, 'y')
-        # loss = self.loss_fn(y_pred, y)
-        # self.optimizer.zero_grad()
-        # loss.backward()
-        # self.optimizer.step()
-        #
-        # # count num_correct
-        # y_pred_idx = y_pred.argmax(dim=2)
-        # num_correct += torch.tensor(y[y == y_pred_idx].size())
+        # Foward pass
+        self.optimizer.zero_grad()
+        if self.h is not None:
+            self.h = self.h.detach()
+        y_pred, self.h = self.model(x, self.h)
 
+        #Backward pass
+        loss = self.loss_fn(y_pred.view(-1, x.shape[-1]), y.view(-1))
+        loss.backward()
 
-        # raise NotImplementedError()
+        # Weight updates
+        self.optimizer.step()
+
+        # Calculate number of correct char predictions
+        y_pred_idx = y_pred.argmax(dim=2)
+        num_correct = torch.sum(y == y_pred_idx)
         # ========================
 
         # Note: scaling num_correct by seq_len because each sample has seq_len
@@ -296,7 +326,19 @@ class RNNTrainer(Trainer):
             # - Loss calculation
             # - Calculate number of correct predictions
             # ====== YOUR CODE: ======
-            raise NotImplementedError()
+
+            if self.h is not None:
+                self.h = self.h.detach()
+
+            # Foward pass
+            y_pred, self.h = self.model(x, self.h)
+
+            # Loss calculation
+            loss = self.loss_fn(y_pred.view(-1, x.shape[-1]), y.view(-1))
+
+            # Calculate number of correct char predictions
+            y_pred_idx = y_pred.argmax(dim=2)
+            num_correct = torch.sum(y == y_pred_idx)
             # ========================
 
         return BatchResult(loss.item(), num_correct.item() / seq_len)

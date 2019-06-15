@@ -76,13 +76,9 @@ def chars_to_onehot(text: str, char_to_idx: dict) -> Tensor:
     """
     # TODO: Implement the embedding.
     # ====== YOUR CODE: ======
-    zeros_list = [0] * (len(char_to_idx) - 1)
-    chars_mat = []
-    for char in text:
-        onehot = zeros_list.copy()
-        onehot.insert(char_to_idx[char], 1)
-        chars_mat.append(onehot)
-    result = torch.tensor(chars_mat, dtype=torch.int8)
+    result = torch.zeros(size=(len(text), len(char_to_idx)), dtype=torch.int8)
+    for i, char in enumerate(text):
+        result[i, char_to_idx[char]] = 1
     # ========================
     return result
 
@@ -132,18 +128,17 @@ def chars_to_labelled_samples(text: str, char_to_idx: dict, seq_len: int,
 
     # embedded = chars_to_onehot(text, char_to_idx).to(device)
 
-    #TODO: remove, for debug purposes
-    embedded = None
-    embedded_file = 'embedded.pt'
-    if os.path.isfile(embedded_file) and DEBUG == 1:
-        embedded = torch.load(embedded_file, map_location='cpu').to(device)
-        print(embedded[0][0])
-    else:
-        embedded = chars_to_onehot(text, char_to_idx)
-        print(embedded[0][0])
-        torch.save(embedded, embedded_file)
-        embedded.to(device)
-    #END
+    # #TODO: remove, for debug purposes
+    # embedded = None
+    # embedded_file = 'embedded.pt'
+    # if os.path.isfile(embedded_file) and DEBUG == 1:
+    #     embedded = torch.load(embedded_file, map_location='cpu').to(device)
+    #     print(embedded[0][0])
+    # else:
+    #     torch.save(embedded, embedded_file)
+    #     embedded.to(device)
+    # #END
+    embedded = chars_to_onehot(text, char_to_idx)
 
     #TODO: broadcast last sequence
     samples_embedded = torch.unsqueeze(embedded[:-1], dim=0)
@@ -151,7 +146,7 @@ def chars_to_labelled_samples(text: str, char_to_idx: dict, seq_len: int,
 
     labels_embedded = torch.unsqueeze(embedded[1:], dim=0)
     labels_sequences = torch.cat(labels_embedded.split(seq_len, dim=1)[:][:-1], dim=0)
-    labels = torch.argmax(labels_sequences, dim=2)
+    labels = torch.argmax(labels_sequences, dim=2).to(device)
     # ========================
     return samples, labels
 
@@ -203,15 +198,15 @@ def generate_from_model(model, start_sequence, n_chars, char_maps, T):
     # necessary for this. Best to disable tracking for speed.
     # See torch.no_grad().
     # ====== YOUR CODE: ======
-    X = chars_to_onehot(start_sequence, char_to_idx).to(device).unsqueeze(0).to(dtype=torch.float)
-    y, h = model(X)
-    y = y[:, -1:]
-    while len(out_text) < n_chars:
-        prob = hot_softmax(y, 2, T)[0][-1]
-        index = torch.multinomial(prob, 1)
-        out_text += idx_to_char[index.item()]
-        y, h = model(y, h)
-    # ========================
+    with torch.no_grad():
+        X = chars_to_onehot(start_sequence, char_to_idx).to(device).unsqueeze(0).to(dtype=torch.float)
+        y, h = model(X)
+        while len(out_text) < n_chars:
+            softmaxed = hot_softmax(y[:, -1], 1, T)
+            index = int(torch.multinomial(softmaxed.squeeze(0), 1))
+            out_text += idx_to_char[index]
+            X = chars_to_onehot(out_text[-1], char_to_idx).to(device).unsqueeze(0).to(dtype=torch.float)
+            y, h = model(X, h)
 
     return out_text
 
@@ -254,39 +249,27 @@ class MultilayerGRU(nn.Module):
         #     then call self.register_parameter() on them. Also make
         #     sure to initialize them. See functions in torch.nn.init.
         # ====== YOUR CODE: ======
-
-        self.layers = \
-            [{
-                # z Layers
-                'Wxz': nn.Linear(in_dim, 1, bias=False),
-                'Whz': nn.Linear(h_dim, 1, bias=True),
-                # r Layers
-                'Wxr': nn.Linear(in_dim, 1, bias=True),
-                'Whr': nn.Linear(h_dim, 1, bias=False),
-                # g Layers
-                'Wxg': nn.Linear(in_dim, h_dim, bias=False),
-                'Whg': nn.Linear(h_dim, h_dim, bias=True)
-            }] +\
-            [{
-                # z Layers
-                'Wxz': nn.Linear(h_dim, 1, bias=False),
-                'Whz': nn.Linear(h_dim, 1, bias=True),
-                # r Layers
-                'Wxr': nn.Linear(h_dim, 1, bias=True),
-                'Whr': nn.Linear(h_dim, 1, bias=False),
-                # g Layers
-                'Wxg': nn.Linear(h_dim, h_dim, bias=False),
-                'Whg': nn.Linear(h_dim, h_dim, bias=True)
-            }] * (n_layers - 1)
-        for i, layer in enumerate(self.layers):
-            for linear in layer:
-                self.add_module(linear + str(i), layer[linear])
-        # output layer
-        self.Why = nn.Sequential(
-            nn.Linear(h_dim, out_dim, bias=True),
-            nn.Sigmoid()
-        )
-        self.dropout = dropout
+        names = ['xz', 'hz', 'xr', 'hr', 'xg', 'hg', 'dropout']
+        for i in range(n_layers):
+            modules = []
+            for name in names:
+                if 'x' in name:
+                    # First layer x is input size
+                    if i == 0:
+                        module = nn.Linear(in_dim, h_dim, bias=False)
+                    else:
+                        module = nn.Linear(h_dim, h_dim, bias=False)
+                elif name is 'dropout':
+                    # Dropout
+                    module = nn.Dropout(dropout)
+                else:
+                    # Any other module.
+                    module = nn.Linear(h_dim, h_dim)
+                self.add_module(name + str(i), module)
+                modules.append(module)
+            self.layer_params.append(modules)
+        # Last layer:
+        self.hy = nn.Linear(h_dim, out_dim, bias=True)
         # ========================
 
     def forward(self, input: Tensor, hidden_state: Tensor=None):
@@ -317,45 +300,62 @@ class MultilayerGRU(nn.Module):
         layer_output = None
 
         # TODO: Implement the model's forward pass.
-        # You'll need to go layer-by-layer from bottom to top (see diagram).
-        # Tip: You can use torch.stack() to combine multiple tensors into a
-        # single tensor in a differentiable manner.
-        #         'Wxz': nn.Linear(h_dim, 1, bias=False),
-        #         'Whz': nn.Linear(h_dim, 1, bias=True),
-        #         # r Layers
-        #         'Wxr': nn.Linear(h_dim, 1, bias=True),
-        #         'Whr': nn.Linear(h_dim, 1, bias=False),
-        #         # g Layers
-        #         'Wxg': nn.Linear(h_dim, h_dim, bias=False),
-        #         'Whg': nn.Linear(h_dim, h_dim, bias=True)
         # ====== YOUR CODE: ======
 
-        for i, layer in enumerate(self.layers):
-            h = layer_states[i]
-            for t, cell_input in enumerate(layer_input.split(1, 1)):
-                cell_input = cell_input.squeeze(1)
-                z = F.sigmoid(layer['Wxz'](cell_input) + layer['Whz'](h))
-                r = F.sigmoid(layer['Wxr'](cell_input) + layer['Whr'](h))
-                g = F.tanh(layer['Wxg'](cell_input) + layer['Whg'](r * h))
-                h = z * h + (1 - z) * g
-                h_up = F.dropout(h, self.dropout).unsqueeze(1)
-                if t == 0:
-                    next_layer_input = h_up
-                else:
-                    next_layer_input = torch.cat((next_layer_input, h_up), dim=1)
-            layer_states[i] = h.unsqueeze(1)
-            layer_input = next_layer_input
-            if VERBOSE:
-                print(f'layer {i} output shape is {layer_input.shape}')
-        hidden_state = torch.cat(layer_states, dim=1)
+        # # OPTION 1 : loop layers first
+        #
+        # hidden_state = []
+        # for i, layer in enumerate(self.layer_params):
+        #     h = layer_states[i]
+        #     layer_output = []
+        #     for t, cell_input in enumerate(layer_input.split(1, 1)):
+        #         cell_input = cell_input.squeeze(1)
+        #         z = layer['sigmoid'](layer['xz'](cell_input) + layer['hz'](h))
+        #         r = layer['sigmoid'](layer['xr'](cell_input) + layer['hr'](h))
+        #         g = layer['tanh'](layer['xg'](cell_input) + layer['hg'](r * h))
+        #         h = z * h + (1 - z) * g
+        #         h_up = layer['dropout'](h).unsqueeze(1)
+        #         layer_output.append(h_up)
+        #     layer_input = torch.cat(layer_output, dim=1)
+        #     hidden_state.append(h.unsqueeze(1))
+        # hidden_state = torch.cat(hidden_state, dim=1)
+        #
+        # #output layer
+        # for t, h in enumerate(layer_input.split(1, 1)):
+        #     out = self.hy(h)
+        #     if t == 0:
+        #         layer_output = out
+        #     else:
+        #         layer_output = torch.cat((layer_output, out), dim=1)
 
-        #output layer
-        for t, h in enumerate(layer_input.split(1, 1)):
-            out = self.Why(h)
-            if t == 0:
-                next_layer_input = out
-            else:
-                next_layer_input = torch.cat((next_layer_input, out), dim=1)
-        layer_output = next_layer_input
+
+        # OPTION 2 : loop chars first
+
+        layer_output = []
+        for t in range(seq_len):
+            layer_input = input[:, t, :]
+            # for i, layer in enumerate(self.layer_params):
+            for i in range(self.n_layers):
+                xr = getattr(self, f'xr{i}')
+                hr = getattr(self, f'hr{i}')
+                xz = getattr(self, f'xz{i}')
+                hz = getattr(self, f'hz{i}')
+                xg = getattr(self, f'xg{i}')
+                hg = getattr(self, f'hg{i}')
+                r = torch.sigmoid(xr(layer_input) + hr(layer_states[i]))
+                z = torch.sigmoid(xz(layer_input) + hz(layer_states[i]))
+                g = torch.tanh(xg(layer_input) + hg(r * layer_states[i]))
+                h = z * layer_states[i] + (1 - z) * g
+                layer_states[i] = h
+                dropout = getattr(self, f'dropout{i}')
+                layer_input = dropout(h)
+            layer_output.append(self.hy(layer_input))
+
+        hidden_state = torch.stack(layer_states, dim=1)
+        layer_output = torch.stack(layer_output, dim=1)
+
         # ========================
+
         return layer_output, hidden_state
+
+
