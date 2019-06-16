@@ -72,7 +72,7 @@ class Trainer(abc.ABC):
                 saved_state = torch.load(checkpoint_filename,
                                          map_location=self.device)
                 best_acc = saved_state.get('best_acc', best_acc)
-                epochs_without_improvement =\
+                epochs_without_improvement = \
                     saved_state.get('ewi', epochs_without_improvement)
                 self.model.load_state_dict(saved_state['model_state'])
 
@@ -105,23 +105,19 @@ class Trainer(abc.ABC):
             # Increase epochs count
             actual_num_epochs += 1
 
-            # Early stopping
-            if early_stopping is not None:
-                if best_acc is not None and epoch_test_acc < best_acc:
-                    if epoch > 15:
-                        epochs_without_improvement += 1
-                        if verbose:
-                            print(f'Patience dropped')
-                else:
-                    best_acc = epoch_train_acc
-                    save_checkpoint = True
-                    if verbose:
-                        print(f'Patience restored')
-                    epochs_without_improvement = 0
+            # Best score
+            if best_acc is None or best_acc < epoch_test_acc:
+                # Update patience, best acc and trigger save
+                epochs_without_improvement = 0
+                best_acc = epoch_test_acc
+                save_checkpoint = True
+            else:
+                epochs_without_improvement += 1
 
-                if epochs_without_improvement == early_stopping:
-                    print(f'Stopped early, at epoch {epoch}')
-                    break
+            # Early stopping
+            if early_stopping is not None and early_stopping <= epoch and epoch > 15:
+                break
+
             # ========================
 
             # Save model checkpoint if requested

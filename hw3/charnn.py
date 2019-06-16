@@ -336,18 +336,23 @@ class MultilayerGRU(nn.Module):
             layer_input = input[:, t, :]
             # for i, layer in enumerate(self.layer_params):
             for i in range(self.n_layers):
+                # Get weights
                 xr = getattr(self, f'xr{i}')
                 hr = getattr(self, f'hr{i}')
                 xz = getattr(self, f'xz{i}')
                 hz = getattr(self, f'hz{i}')
                 xg = getattr(self, f'xg{i}')
                 hg = getattr(self, f'hg{i}')
+                dropout = getattr(self, f'dropout{i}')
+
+                # Calculate h
                 r = torch.sigmoid(xr(layer_input) + hr(layer_states[i]))
                 z = torch.sigmoid(xz(layer_input) + hz(layer_states[i]))
                 g = torch.tanh(xg(layer_input) + hg(r * layer_states[i]))
                 h = z * layer_states[i] + (1 - z) * g
+
+                # Update next layer and time
                 layer_states[i] = h
-                dropout = getattr(self, f'dropout{i}')
                 layer_input = dropout(h)
             layer_output.append(self.hy(layer_input))
 
